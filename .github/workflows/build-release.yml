@@ -40,18 +40,15 @@ jobs:
       - name: Load release body template
         id: release_body
         run: |
-          # Read the release body template
-          BODY_TEMPLATE=$(cat .github/release-body.md)
+          # Copy template and replace placeholders with sed (safe for quotes/apostrophes)
+          cp .github/release-body.md release_notes.md
 
-          # Replace placeholders
-          BODY="${BODY_TEMPLATE}"
-          BODY="${BODY//\{\{VERSION\}\}/${{ github.ref_name }}}"
-          BODY="${BODY//\{\{DATE\}\}/$(date +'%Y-%m-%d')}"
-          BODY="${BODY//\{\{COMMIT_SHA\}\}/${{ github.sha }}}"
-          BODY="${BODY//\{\{COMMIT_MSG\}\}/${{ github.event.head_commit.message }}}"
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
 
-          # Save to file for the release action
-          echo "$BODY" > release_notes.md
+          sed -i "s|{{VERSION}}|${{ github.ref_name }}|g" release_notes.md
+          sed -i "s|{{DATE}}|$(date +'%Y-%m-%d')|g" release_notes.md
+          sed -i "s|{{COMMIT_SHA}}|${{ github.sha }}|g" release_notes.md
+          sed -i "s|{{COMMIT_MSG}}|${COMMIT_MSG}|g" release_notes.md
 
           # Append commits list
           echo "" >> release_notes.md
