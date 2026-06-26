@@ -48,17 +48,20 @@ function Export-PcVueArchitect {
 
                 $adresseMW = $v.Register
 
-                # Adresse X: bit address for BOOL
+                # BOOL byte-packe -> Adresse X (X0/X8) ; bit extrait d'un mot -> WBIT
                 $adresseX = ""
+                $wbit = 0
                 if ($v.Type -eq 'BOOL' -and $null -ne $v.Bit) {
-                    $adresseX = "X$($v.Bit)"
+                    if ($v.IsWordBit) {
+                        $wbit = $v.Bit
+                    } else {
+                        $adresseX = "X$($v.Bit)"
+                    }
                 }
 
-                # Decalage: offset relative to group base
-                $decalage = $v.Register - $baseRegister
-
-                # WBIT
-                $wbit = if ($v.Type -eq 'BOOL' -and $null -ne $v.Bit) { $v.Bit } else { 0 }
+                # Decalage : offset en OCTETS depuis la base du groupe (trame)
+                $decalage = ($v.Register - $baseRegister) * 2
+                if ($null -ne $v.Bit -and $v.Bit -ge 8) { $decalage += 1 }
 
                 # Type: use Unity original type
                 $type = $v.UnityType

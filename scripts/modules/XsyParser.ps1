@@ -205,6 +205,7 @@ function Expand-Variables {
                 Description = $comment
                 Register  = $parsed.Register
                 Bit       = $parsed.Bit
+                IsWordBit = ($null -ne $parsed.Bit)  # %MWxxxx.b = bit extrait d'un mot
                 Zone      = $parsed.Zone
                 Address   = $addr
             }) | Out-Null
@@ -246,7 +247,7 @@ function Expand-ArrayType {
     $items = [System.Collections.ArrayList]::new()
 
     if ($ElementType -eq 'BOOL' -or $ElementType -eq 'EBOOL') {
-        # BOOL arrays: 16 bits per register
+        # Tableau de BOOL : packe 16 bits par mot (bits 0..15 = bits extraits du mot)
         for ($i = 0; $i -lt $count; $i++) {
             $idx = $StartIdx + $i
             $wordOffset = [Math]::Floor($i / 16)
@@ -258,6 +259,7 @@ function Expand-ArrayType {
                 Description = $Comment
                 Register  = $ParsedAddress.Register + $wordOffset
                 Bit       = $bitPosition
+                IsWordBit = $true
                 Zone      = $ParsedAddress.Zone
                 Address   = "$($ParsedAddress.Zone)$($ParsedAddress.Register + $wordOffset).$bitPosition"
             }) | Out-Null
@@ -275,6 +277,7 @@ function Expand-ArrayType {
                 Description = $Comment
                 Register  = $reg
                 Bit       = $null
+                IsWordBit = $false
                 Zone      = $ParsedAddress.Zone
                 Address   = "$($ParsedAddress.Zone)$reg"
             }) | Out-Null
@@ -297,11 +300,12 @@ function Expand-DDT {
     )
 
     $items = [System.Collections.ArrayList]::new()
-    $currentOffset = 0
+    # Offset en OCTETS depuis BaseRegister (packing memoire Schneider, cf. Get-DDTSizeBytes)
+    $byteOffset = 0
     $lastWordRegister = $BaseRegister
 
     foreach ($member in $DDTDef.Members) {
-        # BOOL with ExtractBit: bit in the preceding WORD/INT
+        # BOOL avec ExtractBit : bit extrait du WORD/INT precedent, n'avance pas l'offset
         if ($null -ne $member.ExtractBit) {
             $items.Add(@{
                 Name      = "$ParentName.$($member.Name)"
@@ -310,19 +314,43 @@ function Expand-DDT {
                 Description = if ($member.Comment) { $member.Comment } else { '' }
                 Register  = $lastWordRegister
                 Bit       = $member.ExtractBit
+                IsWordBit = $true
                 Zone      = $Zone
                 Address   = "${Zone}${lastWordRegister}.$($member.ExtractBit)"
             }) | Out-Null
-            continue  # Does NOT advance offset
+            continue
         }
+
+        # BOOL simple : occupe 1 octet, adresse sur X0 (octet pair) ou X8 (octet impair).
+        # Deux BOOL consecutifs partagent ainsi le meme %MW (bits 0 et 8).
+        if ($member.TypeName -eq 'BOOL' -or $member.TypeName -eq 'EBOOL') {
+            $register = $BaseRegister + [int][Math]::Floor($byteOffset / 2)
+            $bit = if ($byteOffset % 2 -eq 0) { 0 } else { 8 }
+            $items.Add(@{
+                Name      = "$ParentName.$($member.Name)"
+                Type      = 'BOOL'
+                UnityType = $member.TypeName
+                Description = if ($member.Comment) { $member.Comment } else { '' }
+                Register  = $register
+                Bit       = $bit
+                IsWordBit = $false  # adressage octet X0/X8, pas un bit de mot
+                Zone      = $Zone
+                Address   = "${Zone}${register}.$bit"
+            }) | Out-Null
+            $byteOffset += 1
+            continue
+        }
+
+        # Types multi-octets : alignement sur frontiere de mot (octet pair)
+        if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
+        $register = $BaseRegister + [int]($byteOffset / 2)
 
         $format = $Script:TYPE_MAP[$member.TypeName]
         if ($format) {
-            $size = $Script:TYPE_SIZE_REGISTERS[$member.TypeName]
-            if (-not $size) { $size = 1 }
-            $register = $BaseRegister + $currentOffset
+            $sizeRegisters = $Script:TYPE_SIZE_REGISTERS[$member.TypeName]
+            if (-not $sizeRegisters) { $sizeRegisters = 1 }
 
-            # Track last WORD/INT register for subsequent ExtractBit BOOLs
+            # Memorise le dernier WORD/INT pour les BOOL ExtractBit suivants
             if ($member.TypeName -eq 'WORD' -or $member.TypeName -eq 'INT' -or $member.TypeName -eq 'UINT') {
                 $lastWordRegister = $register
             }
@@ -334,38 +362,39 @@ function Expand-DDT {
                 Description = if ($member.Comment) { $member.Comment } else { '' }
                 Register  = $register
                 Bit       = $null
+                IsWordBit = $false
                 Zone      = $Zone
                 Address   = "${Zone}${register}"
             }) | Out-Null
-            $currentOffset += $size
+            $byteOffset += $sizeRegisters * 2
         } else {
-            # Possibly a nested DDT or ARRAY within DDT
+            # DDT imbrique ou ARRAY dans un DDT
             $nestedDDT = $DDTMap[$member.TypeName]
             if ($nestedDDT) {
                 $nestedItems = Expand-DDT -ParentName "$ParentName.$($member.Name)" `
-                    -DDTDef $nestedDDT -BaseRegister ($BaseRegister + $currentOffset) `
+                    -DDTDef $nestedDDT -BaseRegister $register `
                     -Zone $Zone -DDTMap $DDTMap -Errors $Errors
                 foreach ($item in $nestedItems) { $items.Add($item) | Out-Null }
-                $currentOffset += (Get-DDTSize -DDTDef $nestedDDT -DDTMap $DDTMap)
+                $byteOffset += (Get-DDTSizeBytes -DDTDef $nestedDDT -DDTMap $DDTMap)
             } elseif ($member.TypeName -match $Script:ARRAY_REGEX) {
-                # Array within DDT
+                # ARRAY dans un DDT
                 $startIdx = [int]$Matches[1]
                 $endIdx = [int]$Matches[2]
                 $elementType = $Matches[3]
-                $parsedAddr = @{ Zone = $Zone; Register = ($BaseRegister + $currentOffset); Bit = $null }
+                $parsedAddr = @{ Zone = $Zone; Register = $register; Bit = $null }
                 $expanded = Expand-ArrayType -VarName "$ParentName.$($member.Name)" `
                     -StartIdx $startIdx -EndIdx $endIdx -ElementType $elementType `
                     -ParsedAddress $parsedAddr -Comment ($member.Comment)
                 if ($expanded) {
                     foreach ($item in $expanded) { $items.Add($item) | Out-Null }
-                    # Calculate array size for offset
+                    # Taille du tableau en octets (un ARRAY OF BOOL est packe 16 bits/mot)
                     $arrCount = $endIdx - $startIdx + 1
                     if ($elementType -eq 'BOOL' -or $elementType -eq 'EBOOL') {
-                        $currentOffset += [Math]::Ceiling($arrCount / 16)
+                        $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
                     } else {
                         $eSize = $Script:TYPE_SIZE_REGISTERS[$elementType]
                         if (-not $eSize) { $eSize = 1 }
-                        $currentOffset += ($arrCount * $eSize)
+                        $byteOffset += ($arrCount * $eSize * 2)
                     }
                 }
             } else {
@@ -379,37 +408,52 @@ function Expand-DDT {
 
 # =================== DDT SIZE ===================
 
-function Get-DDTSize {
+# Taille d'un DDT en OCTETS, packing memoire Schneider :
+#  - BOOL = 1 octet (deux BOOL consecutifs tiennent dans un mot, bits X0/X8)
+#  - types multi-octets alignes sur frontiere de mot (octet pair)
+#  - la structure est completee (padding) jusqu'a une frontiere de mot
+function Get-DDTSizeBytes {
     param(
         [hashtable]$DDTDef,
         [hashtable]$DDTMap
     )
 
-    $size = 0
+    $byteOffset = 0
     foreach ($member in $DDTDef.Members) {
         if ($null -ne $member.ExtractBit) { continue }
 
+        if ($member.TypeName -eq 'BOOL' -or $member.TypeName -eq 'EBOOL') {
+            $byteOffset += 1
+            continue
+        }
+
+        # Alignement sur frontiere de mot avant un type multi-octets
+        if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
+
         $typeSize = $Script:TYPE_SIZE_REGISTERS[$member.TypeName]
         if ($null -ne $typeSize) {
-            $size += $typeSize
+            $byteOffset += $typeSize * 2
         } else {
             $nested = $DDTMap[$member.TypeName]
             if ($nested) {
-                $size += (Get-DDTSize -DDTDef $nested -DDTMap $DDTMap)
+                $byteOffset += (Get-DDTSizeBytes -DDTDef $nested -DDTMap $DDTMap)
             } elseif ($member.TypeName -match $Script:ARRAY_REGEX) {
                 $arrCount = [int]$Matches[2] - [int]$Matches[1] + 1
                 $elemType = $Matches[3]
                 if ($elemType -eq 'BOOL' -or $elemType -eq 'EBOOL') {
-                    $size += [Math]::Ceiling($arrCount / 16)
+                    $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
                 } else {
                     $eSize = $Script:TYPE_SIZE_REGISTERS[$elemType]
                     if (-not $eSize) { $eSize = 1 }
-                    $size += ($arrCount * $eSize)
+                    $byteOffset += ($arrCount * $eSize * 2)
                 }
             }
         }
     }
-    return $size
+
+    # Padding de fin de structure : completer jusqu'a une frontiere de mot
+    if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
+    return [int]$byteOffset
 }
 
 # =================== HELPERS ===================
