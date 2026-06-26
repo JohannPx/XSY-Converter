@@ -57,7 +57,8 @@ function Import-XsyFile {
     $rawVars = if ($dataBlock) { $dataBlock.SelectNodes('variables') } else { $null }
     if (-not $rawVars) { $rawVars = @() }
 
-    $items = Expand-Variables -Variables $rawVars -DDTMap $ddtMap -Errors $errors
+    $stats = @{ ExcludedEbool = 0; ExcludedByte = 0 }
+    $items = Expand-Variables -Variables $rawVars -DDTMap $ddtMap -Errors $errors -Stats $stats
 
     if ($items.Count -eq 0) {
         throw (T "MsgNoVariables")
@@ -72,11 +73,15 @@ function Import-XsyFile {
     $state.DDTDefinitions = $ddtMap
     $state.ParseErrors = @($errors)
     $state.VariableCount = $uniqueItems.Count
+    $state.ExcludedEbool = $stats.ExcludedEbool
+    $state.ExcludedByte = $stats.ExcludedByte
 
     return @{
         ProjectName = $projectName
         VariableCount = $uniqueItems.Count
         ErrorCount = $errors.Count
+        ExcludedEbool = $stats.ExcludedEbool
+        ExcludedByte = $stats.ExcludedByte
     }
 }
 
@@ -155,7 +160,8 @@ function Expand-Variables {
     param(
         $Variables,
         [hashtable]$DDTMap,
-        [System.Collections.ArrayList]$Errors
+        [System.Collections.ArrayList]$Errors,
+        [hashtable]$Stats
     )
 
     $items = [System.Collections.ArrayList]::new()
@@ -174,8 +180,15 @@ function Expand-Variables {
             continue
         }
 
-        # Filter: keep only %MW and %M
-        if ($parsed.Zone -ne '%MW' -and $parsed.Zone -ne '%M') { continue }
+        # Exclure les EBOOL (zone %M, coils) : espace d'adressage Modbus distinct
+        # des registres %MW, non exporte. Comptabilise pour affichage a l'utilisateur.
+        if ($parsed.Zone -eq '%M') {
+            $Stats.ExcludedEbool++
+            continue
+        }
+
+        # Garder uniquement la zone %MW
+        if ($parsed.Zone -ne '%MW') { continue }
 
         $comment = Extract-Comment -Node $v
 
@@ -185,6 +198,12 @@ function Expand-Variables {
             $endIdx = [int]$Matches[2]
             $elementType = $Matches[3]
 
+            # ARRAY OF BYTE : exclu de l'export (comme les EBOOL), comptabilise
+            if ($elementType -eq 'BYTE') {
+                $Stats.ExcludedByte += ($endIdx - $startIdx + 1)
+                continue
+            }
+
             $expanded = Expand-ArrayType -VarName $name -StartIdx $startIdx -EndIdx $endIdx `
                 -ElementType $elementType -ParsedAddress $parsed -Comment $comment
             if ($expanded) {
@@ -192,6 +211,12 @@ function Expand-Variables {
             } else {
                 $Errors.Add("Variable `"$name`" : type ARRAY `"$typeName`" non supporte, ignore") | Out-Null
             }
+            continue
+        }
+
+        # BYTE primitif : exclu de l'export (comme les EBOOL), comptabilise
+        if ($typeName -eq 'BYTE') {
+            $Stats.ExcludedByte++
             continue
         }
 
@@ -216,7 +241,7 @@ function Expand-Variables {
         $ddtDef = $DDTMap[$typeName]
         if ($ddtDef) {
             $expanded = Expand-DDT -ParentName $name -DDTDef $ddtDef -BaseRegister $parsed.Register `
-                -Zone $parsed.Zone -DDTMap $DDTMap -Errors $Errors
+                -Zone $parsed.Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats
             foreach ($item in $expanded) { $items.Add($item) | Out-Null }
             continue
         }
@@ -296,7 +321,8 @@ function Expand-DDT {
         [int]$BaseRegister,
         [string]$Zone,
         [hashtable]$DDTMap,
-        [System.Collections.ArrayList]$Errors
+        [System.Collections.ArrayList]$Errors,
+        [hashtable]$Stats
     )
 
     $items = [System.Collections.ArrayList]::new()
@@ -341,6 +367,14 @@ function Expand-DDT {
             continue
         }
 
+        # BYTE : exclu de l'export (comme les EBOOL), mais dimensionne (1 octet,
+        # 2 BYTE par mot) pour ne pas decaler les membres suivants. Comptabilise.
+        if ($member.TypeName -eq 'BYTE') {
+            $Stats.ExcludedByte++
+            $byteOffset += 1
+            continue
+        }
+
         # Types multi-octets : alignement sur frontiere de mot (octet pair)
         if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
         $register = $BaseRegister + [int]($byteOffset / 2)
@@ -373,7 +407,7 @@ function Expand-DDT {
             if ($nestedDDT) {
                 $nestedItems = Expand-DDT -ParentName "$ParentName.$($member.Name)" `
                     -DDTDef $nestedDDT -BaseRegister $register `
-                    -Zone $Zone -DDTMap $DDTMap -Errors $Errors
+                    -Zone $Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats
                 foreach ($item in $nestedItems) { $items.Add($item) | Out-Null }
                 $byteOffset += (Get-DDTSizeBytes -DDTDef $nestedDDT -DDTMap $DDTMap)
             } elseif ($member.TypeName -match $Script:ARRAY_REGEX) {
@@ -381,20 +415,27 @@ function Expand-DDT {
                 $startIdx = [int]$Matches[1]
                 $endIdx = [int]$Matches[2]
                 $elementType = $Matches[3]
-                $parsedAddr = @{ Zone = $Zone; Register = $register; Bit = $null }
-                $expanded = Expand-ArrayType -VarName "$ParentName.$($member.Name)" `
-                    -StartIdx $startIdx -EndIdx $endIdx -ElementType $elementType `
-                    -ParsedAddress $parsedAddr -Comment ($member.Comment)
-                if ($expanded) {
-                    foreach ($item in $expanded) { $items.Add($item) | Out-Null }
-                    # Taille du tableau en octets (un ARRAY OF BOOL est packe 16 bits/mot)
-                    $arrCount = $endIdx - $startIdx + 1
-                    if ($elementType -eq 'BOOL' -or $elementType -eq 'EBOOL') {
-                        $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
-                    } else {
-                        $eSize = $Script:TYPE_SIZE_REGISTERS[$elementType]
-                        if (-not $eSize) { $eSize = 1 }
-                        $byteOffset += ($arrCount * $eSize * 2)
+                $arrCount = $endIdx - $startIdx + 1
+
+                if ($elementType -eq 'BYTE') {
+                    # ARRAY OF BYTE : exclu de l'export, dimensionne a 1 octet/element
+                    $Stats.ExcludedByte += $arrCount
+                    $byteOffset += $arrCount
+                } else {
+                    $parsedAddr = @{ Zone = $Zone; Register = $register; Bit = $null }
+                    $expanded = Expand-ArrayType -VarName "$ParentName.$($member.Name)" `
+                        -StartIdx $startIdx -EndIdx $endIdx -ElementType $elementType `
+                        -ParsedAddress $parsedAddr -Comment ($member.Comment)
+                    if ($expanded) {
+                        foreach ($item in $expanded) { $items.Add($item) | Out-Null }
+                        # Taille du tableau en octets (un ARRAY OF BOOL est packe 16 bits/mot)
+                        if ($elementType -eq 'BOOL' -or $elementType -eq 'EBOOL') {
+                            $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
+                        } else {
+                            $eSize = $Script:TYPE_SIZE_REGISTERS[$elementType]
+                            if (-not $eSize) { $eSize = 1 }
+                            $byteOffset += ($arrCount * $eSize * 2)
+                        }
                     }
                 }
             } else {
@@ -409,9 +450,11 @@ function Expand-DDT {
 # =================== DDT SIZE ===================
 
 # Taille d'un DDT en OCTETS, packing memoire Schneider :
-#  - BOOL = 1 octet (deux BOOL consecutifs tiennent dans un mot, bits X0/X8)
+#  - BOOL / BYTE = 1 octet (deux par mot ; pour BOOL bits X0/X8)
 #  - types multi-octets alignes sur frontiere de mot (octet pair)
 #  - la structure est completee (padding) jusqu'a une frontiere de mot
+# NB : les BYTE sont dimensionnes ici (pour ne pas decaler les membres suivants)
+# meme s'ils sont exclus de l'export cote Expand-DDT.
 function Get-DDTSizeBytes {
     param(
         [hashtable]$DDTDef,
@@ -422,7 +465,8 @@ function Get-DDTSizeBytes {
     foreach ($member in $DDTDef.Members) {
         if ($null -ne $member.ExtractBit) { continue }
 
-        if ($member.TypeName -eq 'BOOL' -or $member.TypeName -eq 'EBOOL') {
+        # BOOL/EBOOL/BYTE : 1 octet (deux par mot)
+        if ($member.TypeName -eq 'BOOL' -or $member.TypeName -eq 'EBOOL' -or $member.TypeName -eq 'BYTE') {
             $byteOffset += 1
             continue
         }
@@ -442,6 +486,9 @@ function Get-DDTSizeBytes {
                 $elemType = $Matches[3]
                 if ($elemType -eq 'BOOL' -or $elemType -eq 'EBOOL') {
                     $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
+                } elseif ($elemType -eq 'BYTE') {
+                    # ARRAY OF BYTE : 1 octet par element (deux BYTE par mot)
+                    $byteOffset += $arrCount
                 } else {
                     $eSize = $Script:TYPE_SIZE_REGISTERS[$elemType]
                     if (-not $eSize) { $eSize = 1 }

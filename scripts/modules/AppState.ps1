@@ -12,6 +12,8 @@ $Script:AppState = @{
     DDTDefinitions     = @{}
     ParseErrors        = @()
     VariableCount      = 0
+    ExcludedEbool      = 0
+    ExcludedByte       = 0
 
     # Export formats (checkboxes)
     ExportCsv          = $true
