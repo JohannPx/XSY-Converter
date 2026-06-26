@@ -535,6 +535,9 @@ function Invoke-Export {
         $parseResult = Import-XsyFile -FilePath $inputFile
 
         $statusText = (T "MsgParseSuccess") -f $parseResult.VariableCount, $parseResult.ProjectName
+        if ($parseResult.ExcludedEbool -gt 0) {
+            $statusText += " | " + ((T "MsgEboolExcluded") -f $parseResult.ExcludedEbool)
+        }
         if ($parseResult.ErrorCount -gt 0) {
             $statusText += " | " + ((T "MsgParseErrors") -f $parseResult.ErrorCount)
         }
@@ -608,6 +611,9 @@ function Invoke-Export {
                 -Text $msg -Type "success"
 
             $detailLines = @((T "MsgExportFolder") -f $outputFolder)
+            if ($state.ExcludedEbool -gt 0) {
+                $detailLines += ((T "MsgEboolExcluded") -f $state.ExcludedEbool)
+            }
             if ($state.ParseErrors.Count -gt 0) {
                 $detailLines += ""
                 $detailLines += (T "MsgExportDetail")

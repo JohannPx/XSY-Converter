@@ -57,7 +57,8 @@ function Import-XsyFile {
     $rawVars = if ($dataBlock) { $dataBlock.SelectNodes('variables') } else { $null }
     if (-not $rawVars) { $rawVars = @() }
 
-    $items = Expand-Variables -Variables $rawVars -DDTMap $ddtMap -Errors $errors
+    $stats = @{ ExcludedEbool = 0 }
+    $items = Expand-Variables -Variables $rawVars -DDTMap $ddtMap -Errors $errors -Stats $stats
 
     if ($items.Count -eq 0) {
         throw (T "MsgNoVariables")
@@ -72,11 +73,13 @@ function Import-XsyFile {
     $state.DDTDefinitions = $ddtMap
     $state.ParseErrors = @($errors)
     $state.VariableCount = $uniqueItems.Count
+    $state.ExcludedEbool = $stats.ExcludedEbool
 
     return @{
         ProjectName = $projectName
         VariableCount = $uniqueItems.Count
         ErrorCount = $errors.Count
+        ExcludedEbool = $stats.ExcludedEbool
     }
 }
 
@@ -155,7 +158,8 @@ function Expand-Variables {
     param(
         $Variables,
         [hashtable]$DDTMap,
-        [System.Collections.ArrayList]$Errors
+        [System.Collections.ArrayList]$Errors,
+        [hashtable]$Stats
     )
 
     $items = [System.Collections.ArrayList]::new()
@@ -174,8 +178,15 @@ function Expand-Variables {
             continue
         }
 
-        # Filter: keep only %MW and %M
-        if ($parsed.Zone -ne '%MW' -and $parsed.Zone -ne '%M') { continue }
+        # Exclure les EBOOL (zone %M, coils) : espace d'adressage Modbus distinct
+        # des registres %MW, non exporte. Comptabilise pour affichage a l'utilisateur.
+        if ($parsed.Zone -eq '%M') {
+            $Stats.ExcludedEbool++
+            continue
+        }
+
+        # Garder uniquement la zone %MW
+        if ($parsed.Zone -ne '%MW') { continue }
 
         $comment = Extract-Comment -Node $v
 
