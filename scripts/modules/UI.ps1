@@ -342,6 +342,9 @@ function Initialize-MainWindow {
     # Set window icon
     $window.Icon = New-AppIcon
 
+    # Affiche la version de l'app dans la barre de titre
+    try { $window.Title = "XSY Converter - v$(Get-AppVersion)" } catch {}
+
     # Find named elements
     $ui = @{}
     $namedElements = @(

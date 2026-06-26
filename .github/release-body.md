@@ -1,89 +1,99 @@
-# XSY Converter {{VERSION}}
+# 📦 XSY Converter {{VERSION}}
 
 **Date de release** : {{DATE}}
 **Commit** : `{{COMMIT_SHA}}`
 
 ---
 
-## A propos de cette version
+## 🎯 À propos de cette version
 
-Outil PowerShell + WPF pour convertir les fichiers XSY (export variables Schneider Unity Pro) en formats CSV exploitables : table d'echange, var_lst Ewon (Modbus TCP), PcVue Architect.
+Outil **PowerShell + WPF** pour convertir les fichiers XSY (export variables Schneider Unity Pro) en formats CSV exploitables : table d'échange, var_lst Ewon (Modbus TCP), PcVue Architect.
 Interface multilingue (FR/EN/ES/IT), expansion automatique des DDT et ARRAY.
 
-### Dernier changement
-```
-{{COMMIT_MSG}}
-```
+### 📝 Changements de cette version
+
+{{CHANGELOG}}
 
 ---
 
-## Telecharger
+## 📥 Téléchargement et installation
 
-> **Fichier unique auto-contenu** : tous les modules sont integres dans le script lors du build.
-> Aucune dependance externe, PowerShell 5.1 natif Windows suffit.
+### 🔽 Option recommandée : Exécutable (.exe)
 
-### Ou trouver le fichier ?
+1. **Télécharger** le fichier **`XsyConverter.exe`** depuis les **Assets** ci-dessous
+2. **Double-cliquer** pour lancer
 
-Le fichier **`XSY-Converter_latest.ps1`** se trouve dans la section **Assets** tout en bas de cette page (cliquez sur **Assets** pour deplier si necessaire).
+Au premier lancement :
+- L'application s'installe automatiquement dans votre profil utilisateur (aucun droit administrateur requis)
+- Un raccourci est créé sur le **Bureau** et dans le **Menu Démarrer**
+- Les lancements suivants se font via le raccourci
 
-### Lancement
+**Mises à jour automatiques** : à chaque démarrage, l'application vérifie si une nouvelle version est disponible sur GitHub et se met à jour silencieusement.
 
-1. **Telecharger** le fichier `XSY-Converter_latest.ps1` depuis les **Assets** ci-dessous
-2. **Ouvrir PowerShell** : clic-droit sur le menu Demarrer → **Terminal** (ou **Windows PowerShell**)
-3. **Lancer** le script :
+> **Avertissements de sécurité au premier téléchargement/lancement :**
+>
+> 1. **Navigateur** (Chrome/Edge) : *"XsyConverter.exe n'est pas fréquemment téléchargé"*
+>    - Chrome : cliquez sur **`^`** (flèche) → **Conserver**
+>    - Edge : cliquez sur **`...`** → **Conserver** → **Conserver quand même**
+>
+> 2. **Windows SmartScreen** : *"Windows a protégé votre ordinateur"*
+>    - Cliquez sur **Plus d'infos** → **Exécuter quand même**
+>
+> Ces avertissements sont normaux pour un exécutable non signé et n'apparaissent qu'au premier téléchargement.
+
+### 🔽 Option avancée : Script PowerShell (.ps1)
+
+Pour les utilisateurs avancés ou les environnements qui bloquent les exécutables non signés :
+
+1. **Télécharger** le fichier `XSY-Converter_latest.ps1` depuis les **Assets** ci-dessous
+2. **Ouvrir PowerShell** : clic-droit sur le menu Démarrer → **Terminal** (ou **Windows PowerShell**)
+3. **Lancer** :
 
 ```powershell
 powershell -Sta -ExecutionPolicy Bypass -File "$HOME\Downloads\XSY-Converter_latest.ps1"
 ```
 
-> `$HOME\Downloads` correspond au dossier Telechargements. Si le fichier est ailleurs, adaptez le chemin.
-
-### Avertissement de securite Windows
-
-Au premier lancement, Windows peut afficher un avertissement car le script provient d'Internet.
-Tapez `O` puis Entree pour executer. Pour ne plus voir cet avertissement : clic-droit sur le fichier → Proprietes → cochez Debloquer → OK.
+> 💡 Adaptez le chemin si vous avez déplacé le fichier. Le `.ps1` est auto-contenu (aucun dossier `modules/` requis à côté).
 
 ---
 
-## Fonctionnalites
+## ✨ Fonctionnalités principales
 
-### Formats d'export
-- **Table d'echange CSV** : separateur `;`, UTF-8 BOM, en-tete automate (Nom/IP/UnitID), colonnes Tag/Registre/Type/Description/Unite/Repere/Coef
-- **var_lst Ewon** : 62 colonnes Latin-1, adresses Modbus TCP (+400001+reg+suffix, unitId, IP), config prefixe/topic/page
-- **PcVue Architect** : 1 CSV par equipement, colonnes Nom/Adresse MW/Adresse X/Type/Description/Decalage/WBIT/Trame
+### 🌍 Multilingue (FR/EN/ES/IT)
+- ✅ Sélection de la langue via drapeaux
+- ✅ Changement instantané de toute l'interface
 
-### Traitement avance
-- Expansion automatique des structures DDT (imbriquees recursivement)
-- Expansion des ARRAY en elements individuels avec calcul d'offset
-- Gestion ExtractBit pour BOOL dans registres WORD/INT
-- Filtrage zones memoire (%MW, %M uniquement)
+### 📤 Formats d'export
+- ✅ **Table d'échange CSV** (en-tête automate Nom/IP/UnitID)
+- ✅ **var_lst** (Ewon Flexy, Modbus TCP)
+- ✅ **PcVue Architect** (1 CSV par équipement)
 
-### Interface
-- 4 langues (FR/EN/ES/IT)
-- Selection fichier XSY et dossier de sortie
-- Choix du format d'export (CSV, Ewon ou PcVue)
-- Configuration Ewon integree
+### 🔧 Traitement avancé
+- ✅ Expansion automatique des structures DDT (imbriquées récursivement)
+- ✅ Expansion des ARRAY en éléments individuels avec calcul d'offset
+- ✅ Byte-packing des BOOL Schneider (X0/X8) + gestion ExtractBit
+- ✅ Filtrage des zones mémoire (%MW, %M uniquement)
 
 ---
 
-## Prerequis
+## 📋 Configuration requise
 
 | Composant | Minimum |
 |-----------|---------|
 | **Windows** | 10 / 11 |
-| **PowerShell** | 5.1 (inclus dans Windows) |
+| **PowerShell** | 5.1 (inclus) |
 
-Aucune installation supplementaire requise.
-
----
-
-## Support
-
-En cas de probleme :
-1. Verifiez que vous utilisez la derniere version
-2. Consultez la [documentation](../../README.md)
-3. Ouvrez une [issue](../../issues) avec une capture d'ecran de l'erreur
+Aucune installation supplémentaire requise.
 
 ---
 
-*Release automatique generee par GitHub Actions*
+## 🐛 Support
+
+En cas de problème :
+1. Vérifiez que vous utilisez la dernière version
+2. Consultez la [documentation](https://github.com/JohannPx/XSY-Converter#readme)
+3. Ouvrez une [issue](https://github.com/JohannPx/XSY-Converter/issues) avec une capture d'écran de l'erreur
+
+---
+
+*Release automatique générée par GitHub Actions*

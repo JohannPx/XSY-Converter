@@ -42,7 +42,14 @@ try {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $modulesDir = Join-Path $ScriptDir "modules"
 
-    if (Test-Path $modulesDir) {
+    # Dans le build embarque (release), tous les modules sont deja concatenes ci-dessus et
+    # $Script:EmbeddedBuild vaut $true. On ne doit PAS dot-sourcer un dossier "modules" externe
+    # dans ce cas : il ecraserait les fonctions embarquees par des copies potentiellement obsoletes.
+    # Seul le layout modulaire de dev charge les modules depuis le disque. (Get-Variable est utilise
+    # car referencer un $Script:EmbeddedBuild non defini leverait une erreur sous Set-StrictMode.)
+    $embeddedBuild = [bool](Get-Variable -Name EmbeddedBuild -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+
+    if (-not $embeddedBuild -and (Test-Path $modulesDir)) {
         $moduleOrder = @(
             "AppState.ps1"
             "Localization.ps1"

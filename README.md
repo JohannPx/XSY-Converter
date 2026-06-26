@@ -3,7 +3,7 @@
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![WPF](https://img.shields.io/badge/UI-WPF-purple)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-[![GitHub Release](https://img.shields.io/github/v/release/jpr-codit/XSY-Converter?label=Release)](https://github.com/jpr-codit/XSY-Converter/releases/latest)
+[![GitHub Release](https://img.shields.io/github/v/release/JohannPx/XSY-Converter?label=Release)](https://github.com/JohannPx/XSY-Converter/releases/latest)
 
 Outil PowerShell/WPF pour convertir les fichiers **XSY** (export variables Schneider Unity Pro) en plusieurs formats CSV exploitables.
 
@@ -20,7 +20,7 @@ Outil PowerShell/WPF pour convertir les fichiers **XSY** (export variables Schne
 - **Filtrage intelligent** : seules les zones %MW et %M sont conservees (%SW, %S ignores)
 - **Interface graphique WPF** : selection fichier, choix du format, configuration Ewon
 - **4 langues** : FR / EN / ES / IT (drapeaux interactifs)
-- **Distribution en fichier unique** : un seul `.ps1` auto-contenu (release GitHub)
+- **Distribution** : exécutable `.exe` auto-installant et auto-mis à jour, ou `.ps1` unique auto-contenu (release GitHub)
 
 ## Prerequis
 
@@ -34,14 +34,25 @@ Aucune installation supplementaire requise.
 
 ## Installation
 
-### Option 1 : Release (recommande)
+### Option 1 : Executable .exe auto-installant (recommande)
 
-Telecharger `XSY-Converter_latest.ps1` depuis la [derniere release](https://github.com/jpr-codit/XSY-Converter/releases/latest).
+Telecharger `XsyConverter.exe` depuis la [derniere release](https://github.com/JohannPx/XSY-Converter/releases/latest), puis double-cliquer.
 
-### Option 2 : Sources
+Au premier lancement, l'application s'installe dans le profil utilisateur (`%LOCALAPPDATA%\XsyConverter`, aucun droit admin requis), cree un raccourci sur le **Bureau** et dans le **Menu Demarrer**, puis se relance depuis le dossier d'installation. A chaque demarrage, elle **verifie et applique automatiquement** les mises a jour publiees sur GitHub.
+
+> L'executable n'est pas signe et lance un script PowerShell embarque : ce profil peut declencher un faux positif Microsoft Defender ou un avertissement SmartScreen. Sur un master / template de VM, executer (en administrateur) `tools\Allow-XsyConverter.ps1` pour ajouter les exclusions Defender ciblees :
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\tools\Allow-XsyConverter.ps1
+> ```
+
+### Option 2 : Script PowerShell .ps1
+
+Telecharger `XSY-Converter_latest.ps1` depuis la [derniere release](https://github.com/JohannPx/XSY-Converter/releases/latest). Le `.ps1` est auto-contenu (aucun dossier `modules/` requis a cote).
+
+### Option 3 : Sources
 
 ```bash
-git clone https://github.com/jpr-codit/XSY-Converter.git
+git clone https://github.com/JohannPx/XSY-Converter.git
 ```
 
 ## Utilisation
@@ -102,11 +113,11 @@ Sous-dossier horodate avec 1 fichier CSV par equipement/groupe de variables.
 |---------|-------------|
 | Nom | Nom complet de la variable |
 | Adresse MW | Numero de registre %MW |
-| Adresse X | Adresse bit pour BOOL (X0, X1...) |
+| Adresse X | Adresse octet pour BOOL byte-packe (X0 / X8) |
 | Type | Type Unity Pro original |
 | Description | Commentaire |
-| Decalage | Offset relatif au debut du groupe |
-| WBIT | Position bit pour BOOL |
+| Decalage | Offset en octets relatif au debut du groupe (trame) |
+| WBIT | Position bit pour BOOL extrait d'un mot (ExtractBit) |
 | Trame | Reference frame (ex: MW4200) |
 
 ### Expansion DDT / Array
@@ -131,10 +142,12 @@ TAB_MESURES[3]  →  %MW106
 ## Architecture
 
 ```
+manifest.json                  Version courante (auto-bump par la CI)
 scripts/
   XSY-Converter.ps1           Point d'entree (STA, modules, GUI)
+  GenerateIcon.ps1            Generation de l'icone .ico (utilise par la CI)
   modules/
-    AppState.ps1               Etat central de l'application
+    AppState.ps1               Etat central + Get-AppVersion
     Localization.ps1            Traductions FR/EN/ES/IT
     XsyParser.ps1               Parsing XML, expansion DDT/Array
     ExportCsv.ps1               Export table d'echange CSV
@@ -142,6 +155,14 @@ scripts/
     ExportPcVue.ps1             Export PcVue Architect (multi-CSV)
     UIHelpers.ps1               Composants WPF reutilisables
     UI.ps1                      Interface XAML + logique evenements
+wrapper/
+  Program.cs                   Wrapper .exe : auto-installation + auto-update + lancement du .ps1 embarque
+  XsyConverter.csproj          Projet .NET 8 (publish single-file win-x64)
+tools/
+  Allow-XsyConverter.ps1       Exclusions Defender (faux positif exe non signe)
+.github/
+  workflows/build-release.yml  Pipeline : build .ps1 -> package .exe -> release versionnee
+  release-body.md              Gabarit des notes de release
 ```
 
 | Module | Responsabilite |
