@@ -139,6 +139,22 @@ TAB_MESURES[2]  →  %MW104
 TAB_MESURES[3]  →  %MW106
 ```
 
+### Chainage des descriptions
+
+La description d'un membre de DDT est prefixee par les commentaires des structures parentes, joints par ` - `.
+Deux instances du meme DDT restent ainsi distinguables dans la table exportee, meme quand leurs membres
+partagent le commentaire venu de la definition du type.
+
+```
+DDT_PPE_FROID_DISTRIB1_ETAT   "RESEAU FROID DISTRIBUTION : Pompe N°1"
+  .r_Out                      "SORTIE ANALOGIQUE"
+
+  → RESEAU FROID DISTRIBUTION : Pompe N°1 - SORTIE ANALOGIQUE
+```
+
+Un parent sans commentaire n'ajoute pas de prefixe ; un membre sans commentaire conserve la chaine des parents seule.
+Le chainage s'applique aux trois formats d'export (CSV, var_lst Ewon, PcVue Architect).
+
 ## Architecture
 
 ```

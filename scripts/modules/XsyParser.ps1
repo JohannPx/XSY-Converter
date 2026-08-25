@@ -19,6 +19,9 @@ $Script:TYPE_MAP = @{
 
 $Script:ADDRESS_REGEX = '^(%[A-Z]+)(\d+)(?:\.(\d+))?$'
 
+# Separateur entre le commentaire d'une structure parente et celui de son membre
+$Script:DESCRIPTION_SEPARATOR = ' - '
+
 # Safe XML child element access (avoids StrictMode errors on missing properties)
 function Get-XmlChild {
     param([System.Xml.XmlElement]$Node, [string]$ChildName)
@@ -241,7 +244,8 @@ function Expand-Variables {
         $ddtDef = $DDTMap[$typeName]
         if ($ddtDef) {
             $expanded = Expand-DDT -ParentName $name -DDTDef $ddtDef -BaseRegister $parsed.Register `
-                -Zone $parsed.Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats
+                -Zone $parsed.Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats `
+                -ParentDescription $comment
             foreach ($item in $expanded) { $items.Add($item) | Out-Null }
             continue
         }
@@ -322,7 +326,8 @@ function Expand-DDT {
         [string]$Zone,
         [hashtable]$DDTMap,
         [System.Collections.ArrayList]$Errors,
-        [hashtable]$Stats
+        [hashtable]$Stats,
+        [string]$ParentDescription
     )
 
     $items = [System.Collections.ArrayList]::new()
@@ -337,7 +342,7 @@ function Expand-DDT {
                 Name      = "$ParentName.$($member.Name)"
                 Type      = 'BOOL'
                 UnityType = 'BOOL'
-                Description = if ($member.Comment) { $member.Comment } else { '' }
+                Description = Join-Description -Parent $ParentDescription -Own $member.Comment
                 Register  = $lastWordRegister
                 Bit       = $member.ExtractBit
                 IsWordBit = $true
@@ -356,7 +361,7 @@ function Expand-DDT {
                 Name      = "$ParentName.$($member.Name)"
                 Type      = 'BOOL'
                 UnityType = $member.TypeName
-                Description = if ($member.Comment) { $member.Comment } else { '' }
+                Description = Join-Description -Parent $ParentDescription -Own $member.Comment
                 Register  = $register
                 Bit       = $bit
                 IsWordBit = $false  # adressage octet X0/X8, pas un bit de mot
@@ -393,7 +398,7 @@ function Expand-DDT {
                 Name      = "$ParentName.$($member.Name)"
                 Type      = $format
                 UnityType = $member.TypeName
-                Description = if ($member.Comment) { $member.Comment } else { '' }
+                Description = Join-Description -Parent $ParentDescription -Own $member.Comment
                 Register  = $register
                 Bit       = $null
                 IsWordBit = $false
@@ -407,7 +412,8 @@ function Expand-DDT {
             if ($nestedDDT) {
                 $nestedItems = Expand-DDT -ParentName "$ParentName.$($member.Name)" `
                     -DDTDef $nestedDDT -BaseRegister $register `
-                    -Zone $Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats
+                    -Zone $Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats `
+                    -ParentDescription (Join-Description -Parent $ParentDescription -Own $member.Comment)
                 foreach ($item in $nestedItems) { $items.Add($item) | Out-Null }
                 $byteOffset += (Get-DDTSizeBytes -DDTDef $nestedDDT -DDTMap $DDTMap)
             } elseif ($member.TypeName -match $Script:ARRAY_REGEX) {
@@ -425,7 +431,8 @@ function Expand-DDT {
                     $parsedAddr = @{ Zone = $Zone; Register = $register; Bit = $null }
                     $expanded = Expand-ArrayType -VarName "$ParentName.$($member.Name)" `
                         -StartIdx $startIdx -EndIdx $endIdx -ElementType $elementType `
-                        -ParsedAddress $parsedAddr -Comment ($member.Comment)
+                        -ParsedAddress $parsedAddr `
+                        -Comment (Join-Description -Parent $ParentDescription -Own $member.Comment)
                     if ($expanded) {
                         foreach ($item in $expanded) { $items.Add($item) | Out-Null }
                         # Taille du tableau en octets (un ARRAY OF BOOL est packe 16 bits/mot)
@@ -504,6 +511,17 @@ function Get-DDTSizeBytes {
 }
 
 # =================== HELPERS ===================
+
+# Concatene le commentaire des structures parentes avec celui du membre.
+# Un parent sans commentaire n'ajoute pas de prefixe ; un membre sans commentaire
+# conserve la chaine des parents seule.
+function Join-Description {
+    param([string]$Parent, [string]$Own)
+
+    if (-not $Parent) { return $Own }
+    if (-not $Own) { return $Parent }
+    return "$Parent$Script:DESCRIPTION_SEPARATOR$Own"
+}
 
 function Extract-Comment {
     param([System.Xml.XmlElement]$Node)
