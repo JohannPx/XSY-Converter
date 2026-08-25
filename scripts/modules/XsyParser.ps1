@@ -523,14 +523,18 @@ function Join-Description {
     return "$Parent$Script:DESCRIPTION_SEPARATOR$Own"
 }
 
+# Retourne le commentaire d'un noeud, normalise : retours ligne et espaces consecutifs
+# compactes en un espace simple, bords supprimes. Evite les doubles espaces autour du
+# separateur lors du chainage (cf. Join-Description) et les sauts de ligne qui casseraient
+# une ligne CSV ou var_lst.
 function Extract-Comment {
     param([System.Xml.XmlElement]$Node)
 
     $comment = $Node.SelectSingleNode('comment')
     if (-not $comment) { return '' }
     $text = $comment.InnerText
-    if ($text) { return $text }
-    return ''
+    if (-not $text) { return '' }
+    return ($text -replace '\s+', ' ').Trim()
 }
 
 function Remove-DuplicateVariables {
