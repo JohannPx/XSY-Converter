@@ -3,31 +3,41 @@
 
 # =================== CONSTANTS ===================
 
-# Type sizes in 16-bit Modbus registers
-$Script:TYPE_SIZE_REGISTERS = @{
-    BOOL=1; EBOOL=1; INT=1; WORD=1; UINT=1; BYTE=1
-    REAL=2; DINT=2; UDINT=2
-    LREAL=4; LINT=4; ULINT=4
+# Disposition memoire M340 / M580 (aide Control Expert, "DDT: Mapping Rules") :
+# taille et alignement en OCTETS de chaque type elementaire.
+#  - BOOL / EBOOL / BYTE : 1 octet, octet pair ou impair
+#  - types 16 bits : alignes sur un octet pair
+#  - types 32 bits : alignes sur un double mot (donc sur un %MW pair)
+# Les types 64 bits ne sont pas couverts par la documentation : alignes comme les 32 bits.
+# Premium, Quantum et le simulateur alignent tout sur 16 bits : regles non gerees ici.
+$Script:TYPE_LAYOUT = @{
+    BOOL=@{ Size=1; Align=1 }; EBOOL=@{ Size=1; Align=1 }; BYTE=@{ Size=1; Align=1 }
+    INT=@{ Size=2; Align=2 }; UINT=@{ Size=2; Align=2 }; WORD=@{ Size=2; Align=2 }
+    DINT=@{ Size=4; Align=4 }; UDINT=@{ Size=4; Align=4 }; DWORD=@{ Size=4; Align=4 }
+    REAL=@{ Size=4; Align=4 }; TIME=@{ Size=4; Align=4 }; DATE=@{ Size=4; Align=4 }; TOD=@{ Size=4; Align=4 }
+    DT=@{ Size=8; Align=4 }; LREAL=@{ Size=8; Align=4 }; LINT=@{ Size=8; Align=4 }; ULINT=@{ Size=8; Align=4 }
 }
 
-# Unity Pro type -> normalized format
+# Unity Pro type -> normalized format (types exportes)
 $Script:TYPE_MAP = @{
     BOOL='BOOL'; EBOOL='BOOL'; INT='INT'; WORD='UINT'; UINT='UINT'
-    REAL='REAL'; DINT='DINT'; UDINT='UDINT'; BYTE='BYTE'
+    REAL='REAL'; DINT='DINT'; UDINT='UDINT'; DWORD='UDINT'; TIME='UDINT'
     LREAL='LREAL'; LINT='LINT'; ULINT='ULINT'; STRING='STRING'
 }
+
+# Types 16 bits dont un BOOL ExtractBit peut extraire un bit
+$Script:WORD_TYPES = @('INT', 'UINT', 'WORD')
+
+# Un BOOL occupe un octet : bit X0 sur l'octet pair d'un %MW, X8 sur l'octet impair
+$Script:BYTE_BOOL_BITS = @(0, 8)
+
+$Script:BYTES_PER_REGISTER = 2
 
 $Script:ADDRESS_REGEX = '^(%[A-Z]+)(\d+)(?:\.(\d+))?$'
 
 # Separateur entre le commentaire d'une structure parente et celui de son membre
 $Script:DESCRIPTION_SEPARATOR = ' - '
 
-# Safe XML child element access (avoids StrictMode errors on missing properties)
-function Get-XmlChild {
-    param([System.Xml.XmlElement]$Node, [string]$ChildName)
-    $child = $Node.SelectSingleNode($ChildName)
-    return $child
-}
 $Script:ARRAY_REGEX = '^ARRAY\[(\d+)\.\.(\d+)\]\s+OF\s+(\w+)$'
 
 # =================== MAIN ENTRY ===================
@@ -195,125 +205,96 @@ function Expand-Variables {
 
         $comment = Extract-Comment -Node $v
 
-        # 1. Check ARRAY type
-        if ($typeName -match $Script:ARRAY_REGEX) {
-            $startIdx = [int]$Matches[1]
-            $endIdx = [int]$Matches[2]
-            $elementType = $Matches[3]
-
-            # ARRAY OF BYTE : exclu de l'export (comme les EBOOL), comptabilise
-            if ($elementType -eq 'BYTE') {
-                $Stats.ExcludedByte += ($endIdx - $startIdx + 1)
-                continue
-            }
-
-            $expanded = Expand-ArrayType -VarName $name -StartIdx $startIdx -EndIdx $endIdx `
-                -ElementType $elementType -ParsedAddress $parsed -Comment $comment
-            if ($expanded) {
-                foreach ($item in $expanded) { $items.Add($item) | Out-Null }
-            } else {
-                $Errors.Add("Variable `"$name`" : type ARRAY `"$typeName`" non supporte, ignore") | Out-Null
-            }
-            continue
-        }
-
-        # BYTE primitif : exclu de l'export (comme les EBOOL), comptabilise
-        if ($typeName -eq 'BYTE') {
-            $Stats.ExcludedByte++
-            continue
-        }
-
-        # 2. Check primitive type
+        # Type exporte localise directement : %MWxxxx ou %MWxxxx.b (bit extrait d'un mot)
         $format = $Script:TYPE_MAP[$typeName]
         if ($format) {
-            $items.Add(@{
-                Name      = $name
-                Type      = $format
-                UnityType = $typeName
-                Description = $comment
-                Register  = $parsed.Register
-                Bit       = $parsed.Bit
-                IsWordBit = ($null -ne $parsed.Bit)  # %MWxxxx.b = bit extrait d'un mot
-                Zone      = $parsed.Zone
-                Address   = $addr
-            }) | Out-Null
+            $items.Add((New-VariableItem -Name $name -Format $format -UnityType $typeName `
+                -Description $comment -Register $parsed.Register -Bit $parsed.Bit `
+                -IsWordBit ($null -ne $parsed.Bit) -Zone $parsed.Zone)) | Out-Null
             continue
         }
 
-        # 3. Check DDT type
-        $ddtDef = $DDTMap[$typeName]
-        if ($ddtDef) {
-            $expanded = Expand-DDT -ParentName $name -DDTDef $ddtDef -BaseRegister $parsed.Register `
-                -Zone $parsed.Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats `
-                -ParentDescription $comment
-            foreach ($item in $expanded) { $items.Add($item) | Out-Null }
+        # ARRAY, DDT, BYTE... : deployes selon la disposition memoire M340/M580
+        if (-not (Get-TypeLayout -TypeName $typeName -DDTMap $DDTMap)) {
+            if ($typeName -match $Script:ARRAY_REGEX) {
+                $Errors.Add("Variable `"$name`" : type ARRAY `"$typeName`" non supporte, ignore") | Out-Null
+            } else {
+                # FB, R_TRIG, TP... ou DDT dont un membre est inconnu
+                $Errors.Add("Variable `"$name`" : type `"$typeName`" inconnu (pas de DDT), ignore") | Out-Null
+            }
             continue
         }
 
-        # Unknown type - skip silently (FB, R_TRIG, TP, etc.)
-        $Errors.Add("Variable `"$name`" : type `"$typeName`" inconnu (pas de DDT), ignore") | Out-Null
+        $expanded = Expand-TypedValue -Name $name -TypeName $typeName `
+            -ByteAddress ($parsed.Register * $Script:BYTES_PER_REGISTER) -Zone $parsed.Zone `
+            -DDTMap $DDTMap -Errors $Errors -Stats $Stats -Description $comment
+        foreach ($item in $expanded) { $items.Add($item) | Out-Null }
     }
 
     return @($items)
 }
 
-# =================== ARRAY EXPANSION ===================
-
-function Expand-ArrayType {
+# Deploie une valeur de type quelconque placee a l'adresse OCTET donnee (depuis %MW0).
+# L'appelant garantit que le type a une disposition connue (cf. Get-TypeLayout).
+function Expand-TypedValue {
     param(
-        [string]$VarName,
-        [int]$StartIdx,
-        [int]$EndIdx,
-        [string]$ElementType,
-        [hashtable]$ParsedAddress,
-        [string]$Comment
+        [string]$Name,
+        [string]$TypeName,
+        [int]$ByteAddress,
+        [string]$Zone,
+        [hashtable]$DDTMap,
+        [System.Collections.ArrayList]$Errors,
+        [hashtable]$Stats,
+        [string]$Description
     )
 
-    $format = $Script:TYPE_MAP[$ElementType]
-    if (-not $format) { return $null }
+    $register = [int][Math]::Floor($ByteAddress / $Script:BYTES_PER_REGISTER)
 
-    $count = $EndIdx - $StartIdx + 1
-    $items = [System.Collections.ArrayList]::new()
-
-    if ($ElementType -eq 'BOOL' -or $ElementType -eq 'EBOOL') {
-        # Tableau de BOOL : packe 16 bits par mot (bits 0..15 = bits extraits du mot)
-        for ($i = 0; $i -lt $count; $i++) {
-            $idx = $StartIdx + $i
-            $wordOffset = [Math]::Floor($i / 16)
-            $bitPosition = $i % 16
-            $items.Add(@{
-                Name      = "$VarName[$idx]"
-                Type      = 'BOOL'
-                UnityType = $ElementType
-                Description = $Comment
-                Register  = $ParsedAddress.Register + $wordOffset
-                Bit       = $bitPosition
-                IsWordBit = $true
-                Zone      = $ParsedAddress.Zone
-                Address   = "$($ParsedAddress.Zone)$($ParsedAddress.Register + $wordOffset).$bitPosition"
-            }) | Out-Null
-        }
-    } else {
-        $elemSize = $Script:TYPE_SIZE_REGISTERS[$ElementType]
-        if (-not $elemSize) { $elemSize = 1 }
-        for ($i = 0; $i -lt $count; $i++) {
-            $idx = $StartIdx + $i
-            $reg = $ParsedAddress.Register + ($i * $elemSize)
-            $items.Add(@{
-                Name      = "$VarName[$idx]"
-                Type      = $format
-                UnityType = $ElementType
-                Description = $Comment
-                Register  = $reg
-                Bit       = $null
-                IsWordBit = $false
-                Zone      = $ParsedAddress.Zone
-                Address   = "$($ParsedAddress.Zone)$reg"
-            }) | Out-Null
-        }
+    # BYTE : exclu de l'export (comme les EBOOL), comptabilise
+    if ($TypeName -eq 'BYTE') {
+        $Stats.ExcludedByte++
+        return @()
     }
 
-    return @($items)
+    # BOOL : un octet, adresse sur X0 (octet pair) ou X8 (octet impair).
+    # Deux BOOL consecutifs partagent ainsi le meme %MW (bits 0 et 8).
+    if ($TypeName -eq 'BOOL' -or $TypeName -eq 'EBOOL') {
+        $bit = $Script:BYTE_BOOL_BITS[$ByteAddress % $Script:BYTES_PER_REGISTER]
+        return @(New-VariableItem -Name $Name -Format 'BOOL' -UnityType $TypeName `
+            -Description $Description -Register $register -Bit $bit -IsWordBit $false -Zone $Zone)
+    }
+
+    $format = $Script:TYPE_MAP[$TypeName]
+    if ($format) {
+        return @(New-VariableItem -Name $Name -Format $format -UnityType $TypeName `
+            -Description $Description -Register $register -Bit $null -IsWordBit $false -Zone $Zone)
+    }
+
+    if ($TypeName -match $Script:ARRAY_REGEX) {
+        $startIdx = [int]$Matches[1]
+        $endIdx = [int]$Matches[2]
+        $elementType = $Matches[3]
+        $elementSize = (Get-TypeLayout -TypeName $elementType -DDTMap $DDTMap).Size
+
+        $items = [System.Collections.ArrayList]::new()
+        for ($idx = $startIdx; $idx -le $endIdx; $idx++) {
+            $expanded = Expand-TypedValue -Name "$Name[$idx]" -TypeName $elementType `
+                -ByteAddress ($ByteAddress + ($idx - $startIdx) * $elementSize) -Zone $Zone `
+                -DDTMap $DDTMap -Errors $Errors -Stats $Stats -Description $Description
+            foreach ($item in $expanded) { $items.Add($item) | Out-Null }
+        }
+        return @($items)
+    }
+
+    $ddtDef = $DDTMap[$TypeName]
+    if ($ddtDef) {
+        return Expand-DDT -ParentName $Name -DDTDef $ddtDef -BaseByte $ByteAddress -Zone $Zone `
+            -DDTMap $DDTMap -Errors $Errors -Stats $Stats -ParentDescription $Description
+    }
+
+    # DATE, TOD, DT : dimensionnes pour ne pas decaler la suite, mais sans format d'export
+    $Errors.Add("Variable `"$Name`" : type `"$TypeName`" non exportable, ignore") | Out-Null
+    return @()
 }
 
 # =================== DDT EXPANSION ===================
@@ -322,7 +303,7 @@ function Expand-DDT {
     param(
         [string]$ParentName,
         [hashtable]$DDTDef,
-        [int]$BaseRegister,
+        [int]$BaseByte,
         [string]$Zone,
         [hashtable]$DDTMap,
         [System.Collections.ArrayList]$Errors,
@@ -331,183 +312,121 @@ function Expand-DDT {
     )
 
     $items = [System.Collections.ArrayList]::new()
-    # Offset en OCTETS depuis BaseRegister (packing memoire Schneider, cf. Get-DDTSizeBytes)
     $byteOffset = 0
-    $lastWordRegister = $BaseRegister
+    $lastWordRegister = [int][Math]::Floor($BaseByte / $Script:BYTES_PER_REGISTER)
 
     foreach ($member in $DDTDef.Members) {
+        $memberName = "$ParentName.$($member.Name)"
+        $memberDescription = Join-Description -Parent $ParentDescription -Own $member.Comment
+
         # BOOL avec ExtractBit : bit extrait du WORD/INT precedent, n'avance pas l'offset
         if ($null -ne $member.ExtractBit) {
-            $items.Add(@{
-                Name      = "$ParentName.$($member.Name)"
-                Type      = 'BOOL'
-                UnityType = 'BOOL'
-                Description = Join-Description -Parent $ParentDescription -Own $member.Comment
-                Register  = $lastWordRegister
-                Bit       = $member.ExtractBit
-                IsWordBit = $true
-                Zone      = $Zone
-                Address   = "${Zone}${lastWordRegister}.$($member.ExtractBit)"
-            }) | Out-Null
+            $items.Add((New-VariableItem -Name $memberName -Format 'BOOL' -UnityType 'BOOL' `
+                -Description $memberDescription -Register $lastWordRegister -Bit $member.ExtractBit `
+                -IsWordBit $true -Zone $Zone)) | Out-Null
             continue
         }
 
-        # BOOL simple : occupe 1 octet, adresse sur X0 (octet pair) ou X8 (octet impair).
-        # Deux BOOL consecutifs partagent ainsi le meme %MW (bits 0 et 8).
-        if ($member.TypeName -eq 'BOOL' -or $member.TypeName -eq 'EBOOL') {
-            $register = $BaseRegister + [int][Math]::Floor($byteOffset / 2)
-            $bit = if ($byteOffset % 2 -eq 0) { 0 } else { 8 }
-            $items.Add(@{
-                Name      = "$ParentName.$($member.Name)"
-                Type      = 'BOOL'
-                UnityType = $member.TypeName
-                Description = Join-Description -Parent $ParentDescription -Own $member.Comment
-                Register  = $register
-                Bit       = $bit
-                IsWordBit = $false  # adressage octet X0/X8, pas un bit de mot
-                Zone      = $Zone
-                Address   = "${Zone}${register}.$bit"
-            }) | Out-Null
-            $byteOffset += 1
-            continue
+        $layout = Get-TypeLayout -TypeName $member.TypeName -DDTMap $DDTMap
+        if (-not $layout) {
+            # Taille inconnue : les membres suivants ne peuvent plus etre adresses
+            $Errors.Add("DDT $ParentName : type `"$($member.TypeName)`" inconnu pour `"$($member.Name)`", membres suivants ignores") | Out-Null
+            break
         }
 
-        # BYTE : exclu de l'export (comme les EBOOL), mais dimensionne (1 octet,
-        # 2 BYTE par mot) pour ne pas decaler les membres suivants. Comptabilise.
-        if ($member.TypeName -eq 'BYTE') {
-            $Stats.ExcludedByte++
-            $byteOffset += 1
-            continue
+        $byteOffset = Get-AlignedOffset -Offset $byteOffset -Align $layout.Align
+        $memberByte = $BaseByte + $byteOffset
+
+        if ($Script:WORD_TYPES -contains $member.TypeName) {
+            $lastWordRegister = [int]($memberByte / $Script:BYTES_PER_REGISTER)
         }
 
-        # Types multi-octets : alignement sur frontiere de mot (octet pair)
-        if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
-        $register = $BaseRegister + [int]($byteOffset / 2)
+        $expanded = Expand-TypedValue -Name $memberName -TypeName $member.TypeName `
+            -ByteAddress $memberByte -Zone $Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats `
+            -Description $memberDescription
+        foreach ($item in $expanded) { $items.Add($item) | Out-Null }
 
-        $format = $Script:TYPE_MAP[$member.TypeName]
-        if ($format) {
-            $sizeRegisters = $Script:TYPE_SIZE_REGISTERS[$member.TypeName]
-            if (-not $sizeRegisters) { $sizeRegisters = 1 }
-
-            # Memorise le dernier WORD/INT pour les BOOL ExtractBit suivants
-            if ($member.TypeName -eq 'WORD' -or $member.TypeName -eq 'INT' -or $member.TypeName -eq 'UINT') {
-                $lastWordRegister = $register
-            }
-
-            $items.Add(@{
-                Name      = "$ParentName.$($member.Name)"
-                Type      = $format
-                UnityType = $member.TypeName
-                Description = Join-Description -Parent $ParentDescription -Own $member.Comment
-                Register  = $register
-                Bit       = $null
-                IsWordBit = $false
-                Zone      = $Zone
-                Address   = "${Zone}${register}"
-            }) | Out-Null
-            $byteOffset += $sizeRegisters * 2
-        } else {
-            # DDT imbrique ou ARRAY dans un DDT
-            $nestedDDT = $DDTMap[$member.TypeName]
-            if ($nestedDDT) {
-                $nestedItems = Expand-DDT -ParentName "$ParentName.$($member.Name)" `
-                    -DDTDef $nestedDDT -BaseRegister $register `
-                    -Zone $Zone -DDTMap $DDTMap -Errors $Errors -Stats $Stats `
-                    -ParentDescription (Join-Description -Parent $ParentDescription -Own $member.Comment)
-                foreach ($item in $nestedItems) { $items.Add($item) | Out-Null }
-                $byteOffset += (Get-DDTSizeBytes -DDTDef $nestedDDT -DDTMap $DDTMap)
-            } elseif ($member.TypeName -match $Script:ARRAY_REGEX) {
-                # ARRAY dans un DDT
-                $startIdx = [int]$Matches[1]
-                $endIdx = [int]$Matches[2]
-                $elementType = $Matches[3]
-                $arrCount = $endIdx - $startIdx + 1
-
-                if ($elementType -eq 'BYTE') {
-                    # ARRAY OF BYTE : exclu de l'export, dimensionne a 1 octet/element
-                    $Stats.ExcludedByte += $arrCount
-                    $byteOffset += $arrCount
-                } else {
-                    $parsedAddr = @{ Zone = $Zone; Register = $register; Bit = $null }
-                    $expanded = Expand-ArrayType -VarName "$ParentName.$($member.Name)" `
-                        -StartIdx $startIdx -EndIdx $endIdx -ElementType $elementType `
-                        -ParsedAddress $parsedAddr `
-                        -Comment (Join-Description -Parent $ParentDescription -Own $member.Comment)
-                    if ($expanded) {
-                        foreach ($item in $expanded) { $items.Add($item) | Out-Null }
-                        # Taille du tableau en octets (un ARRAY OF BOOL est packe 16 bits/mot)
-                        if ($elementType -eq 'BOOL' -or $elementType -eq 'EBOOL') {
-                            $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
-                        } else {
-                            $eSize = $Script:TYPE_SIZE_REGISTERS[$elementType]
-                            if (-not $eSize) { $eSize = 1 }
-                            $byteOffset += ($arrCount * $eSize * 2)
-                        }
-                    }
-                }
-            } else {
-                $Errors.Add("DDT $ParentName : type `"$($member.TypeName)`" inconnu pour `"$($member.Name)`", ignore") | Out-Null
-            }
-        }
+        $byteOffset += $layout.Size
     }
 
     return @($items)
 }
 
-# =================== DDT SIZE ===================
+# =================== MEMORY LAYOUT ===================
 
-# Taille d'un DDT en OCTETS, packing memoire Schneider :
-#  - BOOL / BYTE = 1 octet (deux par mot ; pour BOOL bits X0/X8)
-#  - types multi-octets alignes sur frontiere de mot (octet pair)
-#  - la structure est completee (padding) jusqu'a une frontiere de mot
-# NB : les BYTE sont dimensionnes ici (pour ne pas decaler les membres suivants)
-# meme s'ils sont exclus de l'export cote Expand-DDT.
-function Get-DDTSizeBytes {
+# Taille et alignement en OCTETS d'un type, disposition M340/M580 :
+#  - elementaire : cf. TYPE_LAYOUT
+#  - ARRAY : elements contigus, alignement de l'element
+#  - DDT : membres dans l'ordre de declaration, chacun a son alignement ; la structure
+#    prend l'alignement le plus contraignant de ses membres et sa taille est completee
+#    jusqu'a un multiple de cet alignement
+# Retourne $null si le type, ou l'un de ses membres, est inconnu.
+# NB : les BYTE sont dimensionnes (pour ne pas decaler les membres suivants)
+# meme s'ils sont exclus de l'export.
+function Get-TypeLayout {
     param(
-        [hashtable]$DDTDef,
+        [string]$TypeName,
         [hashtable]$DDTMap
     )
 
-    $byteOffset = 0
-    foreach ($member in $DDTDef.Members) {
-        if ($null -ne $member.ExtractBit) { continue }
+    $layout = $Script:TYPE_LAYOUT[$TypeName]
+    if ($layout) { return $layout }
 
-        # BOOL/EBOOL/BYTE : 1 octet (deux par mot)
-        if ($member.TypeName -eq 'BOOL' -or $member.TypeName -eq 'EBOOL' -or $member.TypeName -eq 'BYTE') {
-            $byteOffset += 1
-            continue
-        }
-
-        # Alignement sur frontiere de mot avant un type multi-octets
-        if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
-
-        $typeSize = $Script:TYPE_SIZE_REGISTERS[$member.TypeName]
-        if ($null -ne $typeSize) {
-            $byteOffset += $typeSize * 2
-        } else {
-            $nested = $DDTMap[$member.TypeName]
-            if ($nested) {
-                $byteOffset += (Get-DDTSizeBytes -DDTDef $nested -DDTMap $DDTMap)
-            } elseif ($member.TypeName -match $Script:ARRAY_REGEX) {
-                $arrCount = [int]$Matches[2] - [int]$Matches[1] + 1
-                $elemType = $Matches[3]
-                if ($elemType -eq 'BOOL' -or $elemType -eq 'EBOOL') {
-                    $byteOffset += [int][Math]::Ceiling($arrCount / 16) * 2
-                } elseif ($elemType -eq 'BYTE') {
-                    # ARRAY OF BYTE : 1 octet par element (deux BYTE par mot)
-                    $byteOffset += $arrCount
-                } else {
-                    $eSize = $Script:TYPE_SIZE_REGISTERS[$elemType]
-                    if (-not $eSize) { $eSize = 1 }
-                    $byteOffset += ($arrCount * $eSize * 2)
-                }
-            }
-        }
+    if ($TypeName -match $Script:ARRAY_REGEX) {
+        $count = [int]$Matches[2] - [int]$Matches[1] + 1
+        $element = Get-TypeLayout -TypeName $Matches[3] -DDTMap $DDTMap
+        if (-not $element) { return $null }
+        return @{ Size = $count * $element.Size; Align = $element.Align }
     }
 
-    # Padding de fin de structure : completer jusqu'a une frontiere de mot
-    if ($byteOffset % 2 -ne 0) { $byteOffset += 1 }
-    return [int]$byteOffset
+    $ddtDef = $DDTMap[$TypeName]
+    if (-not $ddtDef) { return $null }
+
+    $byteOffset = 0
+    $align = 1
+    foreach ($member in $ddtDef.Members) {
+        if ($null -ne $member.ExtractBit) { continue }
+
+        $memberLayout = Get-TypeLayout -TypeName $member.TypeName -DDTMap $DDTMap
+        if (-not $memberLayout) { return $null }
+
+        $byteOffset = (Get-AlignedOffset -Offset $byteOffset -Align $memberLayout.Align) + $memberLayout.Size
+        $align = [Math]::Max($align, $memberLayout.Align)
+    }
+
+    return @{ Size = (Get-AlignedOffset -Offset $byteOffset -Align $align); Align = $align }
+}
+
+function Get-AlignedOffset {
+    param([int]$Offset, [int]$Align)
+
+    return [int]([Math]::Ceiling($Offset / $Align) * $Align)
+}
+
+function New-VariableItem {
+    param(
+        [string]$Name,
+        [string]$Format,
+        [string]$UnityType,
+        [string]$Description,
+        [int]$Register,
+        $Bit,
+        [bool]$IsWordBit,
+        [string]$Zone
+    )
+
+    $address = if ($null -ne $Bit) { "${Zone}${Register}.$Bit" } else { "${Zone}${Register}" }
+    return @{
+        Name        = $Name
+        Type        = $Format
+        UnityType   = $UnityType
+        Description = $Description
+        Register    = $Register
+        Bit         = $Bit
+        IsWordBit   = $IsWordBit  # %MWxxxx.b = bit extrait d'un mot ; sinon BOOL adresse X0/X8
+        Zone        = $Zone
+        Address     = $address
+    }
 }
 
 # =================== HELPERS ===================

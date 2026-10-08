@@ -139,6 +139,25 @@ TAB_MESURES[2]  →  %MW104
 TAB_MESURES[3]  →  %MW106
 ```
 
+### Disposition memoire (M340 / M580)
+
+Les adresses des membres de DDT et des elements de tableau suivent les regles de mapping M340 / M580
+(aide Control Expert, *DDT: Mapping Rules*) :
+
+| Type | Taille | Alignement |
+|------|--------|------------|
+| BOOL, EBOOL, BYTE | 1 octet | octet pair ou impair (BOOL adresse en X0 / X8) |
+| INT, UINT, WORD | 2 octets | octet pair |
+| DINT, UDINT, DWORD, REAL, TIME, DATE, TOD | 4 octets | double mot (%MW pair) |
+| DT, LREAL, LINT, ULINT | 8 octets | double mot |
+| ARRAY | n x element | celui de l'element |
+| DDT | somme des membres, completee jusqu'a son alignement | celui de son membre le plus contraignant |
+
+Un tableau de BOOL occupe donc un octet par element : `TAB[0]` → `%MW100.0` (X0), `TAB[1]` → `%MW100.8` (X8),
+`TAB[2]` → `%MW101.0`...
+
+Premium, Quantum et le simulateur alignent tout sur 16 bits : ces plateformes ne sont pas gerees.
+
 ### Chainage des descriptions
 
 La description d'un membre de DDT est prefixee par les commentaires des structures parentes, joints par ` - `.
@@ -198,7 +217,9 @@ Le format XSY est un export XML de Schneider Unity Pro (element racine `Variable
 - **`<dataBlock>`** : variables du projet avec nom, type, adresse topologique et commentaires
 - **`<DDTSource>`** : definitions de types derives (structures) avec leurs membres
 
-Types supportes : BOOL, EBOOL, INT, UINT, WORD, BYTE, DINT, UDINT, REAL, LREAL, LINT, ULINT, STRING, et les ARRAY de ces types.
+Types exportes : BOOL, EBOOL, INT, UINT, WORD, DINT, UDINT, DWORD, TIME, REAL, LREAL, LINT, ULINT, les ARRAY et les DDT composes de ces types, et STRING hors DDT (sa taille n'etant pas geree,
+les membres qui suivent un STRING dans un DDT sont ignores et signales).
+BYTE, DATE, TOD et DT sont dimensionnes (ils ne decalent pas les membres suivants) mais ne sont pas exportes.
 
 ## Auteur
 

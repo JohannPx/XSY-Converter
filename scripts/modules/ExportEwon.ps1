@@ -4,7 +4,7 @@
 # Ewon display type: 0=BOOL, 1=Float, 2=Int(8/16bit), 3=DWord(32/64bit)
 $Script:EWON_TYPE_MAP = @{
     BOOL=0
-    BYTE=2; INT=2; UINT=2
+    INT=2; UINT=2
     REAL=1; LREAL=1
     DINT=3; UDINT=3
     LINT=3; ULINT=3
@@ -14,7 +14,6 @@ $Script:EWON_TYPE_MAP = @{
 # Modbus format suffix (without wordswipe)
 $Script:MODBUS_FORMAT = @{
     BOOL='#'
-    BYTE='I'
     INT='I'
     UINT='W'
     DINT='L'
